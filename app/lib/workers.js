@@ -127,5 +127,64 @@ workers.performCheck = (originalCheckData) => {
   req.end();
 };
 
+// Process the check outcome, update the check data as needed, trigger an alert if needed
+// Special logic for accomodating a check that has never been tested before (don't alert on that one)
+workers.processCheckOutcome = (originalCheckData,checkOutcome)=> {
+
+  // Decide if the check is considered up or down
+  let state = !checkOutcome.error && checkOutcome.responseCode && originalCheckData.successCodes.indexOf(checkOutcome.responseCode) > -1 ? 'up' : 'down';
+
+  // Decide if an alert is warranted
+  let alertWarranted = originalCheckData.lastChecked && originalCheckData.state !== state ? true : false;
+
+  // Update the check data
+  let newCheckData = originalCheckData;
+  newCheckData.state = state;
+  newCheckData.lastChecked = Date.now();
+
+  // Save the updates
+  _data.update('checks',newCheckData.id,newCheckData,(err) => {
+    if(!err){
+      // Send the new check data to the next phase in the process if needed
+      if(alertWarranted){
+        workers.alertUserToStatusChange(newCheckData);
+      } else {
+        console.log("Check outcome has not changed, no alert needed");
+      }
+    } else {
+      console.log("Error trying to save updates to one of the checks");
+    }
+  });
+};
+
+// Alert the user as to a change in their check status
+workers.alertUserToStatusChange = (newCheckData) => {
+  let msg = 'Alert: Your check for '+newCheckData.method.toUpperCase()+' '+newCheckData.protocol+'://'+newCheckData.url+' is currently '+newCheckData.state;
+  helpers.sendTwilioSms(newCheckData.userPhone,msg,(err)=> {
+    if(!err){
+      console.log("Success: User was alerted to a status change in their check, via sms: ",msg);
+    } else {
+      console.log("Error: Could not send sms alert to user who had a state change in their check",err);
+    }
+  });
+};
+
+// Timer to execute the worker-process once per minute
+workers.loop = () => {
+  setInterval(() => {
+    workers.gatherAllChecks();
+  },1000 * 60);
+};
+
+// Init script
+workers.init = () => {
+
+  // Execute all the checks immediately
+  workers.gatherAllChecks();
+
+  // Call the loop so the checks will execute later on
+  workers.loop();
+};
+
 //Export Module
 module.exports = workers;
